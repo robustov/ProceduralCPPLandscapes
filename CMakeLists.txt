@@ -1,61 +1,61 @@
 cmake_minimum_required(VERSION 3.16)
-project(mountains VERSION 0.1 LANGUAGES CXX)
+project(mountains LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
 
-if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+# Produce compile_commands.json
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# --- Collect sources (non-recursive) ---
+# Prefer explicit, simple globs so we don't accidentally pick up files from the build dir.
+file(GLOB SRC_FILES
+  "${CMAKE_SOURCE_DIR}/src/*.cpp"
+  "${CMAKE_SOURCE_DIR}/*.cpp"   # optional top-level sources (e.g. main.cpp)
+)
+
+if(NOT SRC_FILES)
+  message(FATAL_ERROR "No source .cpp files found in src/ or project root.")
 endif()
 
+# Print discovered sources (handy for debugging)
+message(STATUS "Source files: ${SRC_FILES}")
+
+add_executable(mountains ${SRC_FILES})
+
+# Make headers available (include/)
+target_include_directories(mountains PRIVATE "${CMAKE_SOURCE_DIR}/include")
+
+# --- SDL2 find: prefer CMake config, fall back to pkg-config ---
 find_package(SDL2 CONFIG QUIET)
 
 if(SDL2_FOUND)
   message(STATUS "Found SDL2 via CMake config")
-  set(SDL2_TARGET SDL2::SDL2)
+  target_link_libraries(mountains PRIVATE SDL2::SDL2)
 else()
   message(STATUS "SDL2 CMake config not found; trying pkg-config")
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(SDL2_PKG REQUIRED sdl2)
-
-  if(NOT SDL2_PKG_FOUND)
-    message(FATAL_ERROR "SDL2 not found. Install SDL2 dev package (e.g. libsdl2-dev).")
-  endif()
-
-  add_library(SDL2::SDL2 INTERFACE IMPORTED)
-  set_target_properties(SDL2::SDL2 PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${SDL2_PKG_INCLUDE_DIRS}"
-    INTERFACE_LINK_LIBRARIES "${SDL2_PKG_LIBRARIES}"
-  )
-  if(SDL2_PKG_CFLAGS)
-    target_compile_options(SDL2::SDL2 INTERFACE ${SDL2_PKG_CFLAGS})
-  endif()
-  set(SDL2_TARGET SDL2::SDL2)
-endif()
-
-file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
-  "${CMAKE_SOURCE_DIR}/src/*.cpp"
-)
-
-if(NOT SRC_FILES)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/generator.cpp")
-    set(SRC_FILES "${CMAKE_SOURCE_DIR}/generator.cpp")
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(SDL2_PKG QUIET sdl2)
+    if(SDL2_PKG_FOUND)
+      message(STATUS "Found SDL2 via pkg-config")
+      target_include_directories(mountains PRIVATE ${SDL2_PKG_INCLUDE_DIRS})
+      target_link_libraries(mountains PRIVATE ${SDL2_PKG_LIBRARIES})
+      if(SDL2_PKG_CFLAGS_OTHER)
+        target_compile_options(mountains PRIVATE ${SDL2_PKG_CFLAGS_OTHER})
+      endif()
+    else()
+      message(WARNING "pkg-config could not find sdl2. If your project uses SDL2, install libsdl2-dev.")
+    endif()
   else()
-    message(FATAL_ERROR "No source files found in src/ and no generator.cpp at project root.")
+    message(WARNING "pkg-config not available. If your project uses SDL2, install libsdl2-dev or provide SDL2 manually.")
   endif()
 endif()
 
-add_executable(mountains ${SRC_FILES})
-
-target_link_libraries(mountains PRIVATE ${SDL2_TARGET})
-
+# Enable useful warnings
 if (MSVC)
-  target_compile_options(mountains PRIVATE /W4 /permissive-)
+  target_compile_options(mountains PRIVATE /W4)
 else()
   target_compile_options(mountains PRIVATE -Wall -Wextra -Wpedantic)
 endif()
-
-install(TARGETS mountains DESTINATION bin)
-
 
