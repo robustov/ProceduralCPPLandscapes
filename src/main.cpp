@@ -1,190 +1,163 @@
-#include "Color.h"
-#include "Mountain.h"
-#include <SDL2/SDL.h>
+#include "SDLRenderer.h"
+#include "Scene.h"
+#include <ctime>
 #include <iostream>
-#include <random>
 #include <vector>
 
-#include <random>
-struct Cloud {
-  float cx, cy; // center (pixels)
-  float rx, ry; // radii
-  double alpha; // max alpha 0..1
-};
-
-double gaussian_falloff(double dx, double dy, double rx, double ry) {
-  double nx = dx / rx;
-  double ny = dy / ry;
-  double r2 = nx * nx + ny * ny;
-  // use exp(-r2 * k) shape; tweak k for softness
-  return std::exp(-r2 * 2.0);
+std::vector<MountainParams> makeRandomMountains(size_t n, int winW) {
+  std::vector<MountainParams> out;
+  out.reserve(n);
+  std::srand(static_cast<unsigned>(std::time(nullptr)));
+  for (size_t i = 0; i < n; ++i) {
+    MountainParams p;
+    p.width = winW;
+    p.seed = static_cast<uint32_t>(std::rand()) ^
+             static_cast<uint32_t>(i * 2654435761u);
+    p.leftHeight = 0.05 + 0.15 * ((double)std::rand() / RAND_MAX);
+    p.rightHeight = 0.05 + 0.15 * ((double)std::rand() / RAND_MAX);
+    p.initialDisplacement = 0.6 + 0.6 * ((double)std::rand() / RAND_MAX);
+    p.roughness = 0.4 + 0.2 * ((double)std::rand() / RAND_MAX);
+    p.minHeight = 0.02;
+    p.maxHeight = 0.5;
+    p.verticalSpan = 0.55 + 0.35 * ((double)std::rand() / RAND_MAX);
+    p.verticalOffset = 30 - int(i * 5);
+    uint8_t g = uint8_t(30 + std::rand() % 120);
+    p.colorARGB =
+        (0xFFu << 24) | (uint32_t(g) << 16) | (uint32_t(g) << 8) | uint32_t(g);
+    out.push_back(std::move(p));
+  }
+  return out;
 }
 
-void draw_clouds(uint32_t *pixels, int rowStride, int winW, int winH,
-                 const std::vector<Cloud> &clouds, uint32_t cloudColorARGB) {
-  for (const auto &c : clouds) {
-    int x0 = std::max(0, int(std::floor(c.cx - c.rx)));
-    int x1 = std::min(winW - 1, int(std::ceil(c.cx + c.rx)));
-    int y0 = std::max(0, int(std::floor(c.cy - c.ry)));
-    int y1 = std::min(winH - 1, int(std::ceil(c.cy + c.ry)));
-    for (int y = y0; y <= y1; ++y) {
-      for (int x = x0; x <= x1; ++x) {
-        double dx = double(x) - c.cx;
-        double dy = double(y) - c.cy;
-        double f = gaussian_falloff(dx, dy, c.rx, c.ry);
-        if (f < 1e-3)
-          continue;
-        double a = c.alpha * f; // final alpha [0..1]
+enum class PaletteId { RandomGray, Nord, Everforest };
+PaletteId currentPaletteId = PaletteId::RandomGray;
+std::vector<uint32_t> currentPalette; // empty = random gray fallback
 
-        // blend cloudColor over dest
-        uint32_t dst = pixels[y * rowStride + x];
-        // unpack
-        int dra = (dst >> 24) & 0xFF, dr = (dst >> 16) & 0xFF,
-            dg = (dst >> 8) & 0xFF, db = dst & 0xFF;
-        int cra = (cloudColorARGB >> 24) & 0xFF,
-            cr = (cloudColorARGB >> 16) & 0xFF,
-            cg = (cloudColorARGB >> 8) & 0xFF, cb = cloudColorARGB & 0xFF;
-        double alpha = a; // 0..1
-        // simple alpha blend (source alpha over dest)
-        double out_r = cr * alpha + dr * (1.0 - alpha);
-        double out_g = cg * alpha + dg * (1.0 - alpha);
-        double out_b = cb * alpha + db * (1.0 - alpha);
-        // keep 255 alpha
-        pixels[y * rowStride + x] =
-            argb(255, uint8_t(out_r + 0.5), uint8_t(out_g + 0.5),
-                 uint8_t(out_b + 0.5));
-      }
+std::vector<MountainParams>
+makeRandomMountainsWithPalette(size_t count, int winW,
+                               const std::vector<uint32_t> &palette) {
+  std::vector<MountainParams> out;
+  out.reserve(count);
+  static thread_local std::mt19937 rng((uint32_t)std::random_device{}());
+  std::uniform_real_distribution<double> uf01(0.0, 1.0);
+  for (size_t i = 0; i < count; ++i) {
+    double t = double(i) / double(std::max<size_t>(1, count - 1));
+    MountainParams p;
+    p.width = winW;
+    p.seed = static_cast<uint32_t>(rng() ^ (uint32_t)(i * 2654435761u));
+    p.leftHeight = 0.05 + 0.15 * uf01(rng) + 0.06 * t;
+    p.rightHeight = 0.05 + 0.15 * uf01(rng) + 0.06 * t;
+    p.initialDisplacement = 0.5 + 0.9 * uf01(rng) + 0.4 * t;
+    p.roughness = 0.45 + 0.18 * uf01(rng);
+    p.minHeight = 0.02 * (1.0 - t);
+    p.maxHeight = 0.35 + 0.55 * t; // foreground larger
+    p.verticalSpan = 0.5 + 0.45 * t;
+    p.verticalOffset = static_cast<int>(30.0 * (1.0 - t));
+    if (!palette.empty()) {
+      size_t idx = std::min<size_t>(i, palette.size() - 1);
+      p.colorARGB = palette[idx];
+    } else {
+      uint8_t g = uint8_t(30 + (rng() % 140));
+      p.colorARGB = (0xFFu << 24) | (uint32_t(g) << 16) | (uint32_t(g) << 8) |
+                    uint32_t(g);
     }
+    out.push_back(std::move(p));
   }
+  return out;
 }
 
-int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  const int WIN_W = 1024;
-  const int WIN_H = 512;
-  const char *title = "Mountains - refactor example";
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
-    std::cerr << "SDL_Init error: " << SDL_GetError() << "\n";
+// Nord palette wrapper
+std::vector<MountainParams> makeRandomMountainsNord(size_t count, int winW) {
+  // Nord-ish palette (far -> near)
+  const std::vector<uint32_t> nord = {0xFF2E3440u, // polar-night
+                                      0xFF3B4252u, 0xFF434C5Eu, 0xFF4C566Au,
+                                      0xFFD8DEE9u, // snow-light (use sparingly)
+                                      0xFF8FBCBBu, // frost / teal
+                                      0xFF88C0D0u, 0xFF81A1C1u};
+  return makeRandomMountainsWithPalette(count, winW, nord);
+}
+
+// Everforest palette wrapper
+std::vector<MountainParams> makeRandomMountainsEverforest(size_t count,
+                                                          int winW) {
+  const std::vector<uint32_t> everforest = {
+      0xFF1B3B2Bu, // far (deep green)
+      0xFF2A5B3Au, 0xFF3B7B49u, 0xFF4C9B58u,
+      0xFF6BBA6Bu // near
+  };
+  return makeRandomMountainsWithPalette(count, winW, everforest);
+}
+
+int main() {
+
+  // helper to set the palette vector from id
+  auto setPaletteById = [&](PaletteId id) {
+    currentPalette.clear();
+    currentPaletteId = id;
+    if (id == PaletteId::Nord) {
+      currentPalette = {0xFF2E3440u, 0xFF3B4252u, 0xFF434C5Eu, 0xFF4C566Au,
+                        0xFFD8DEE9u, 0xFF8FBCBBu, 0xFF88C0D0u, 0xFF81A1C1u};
+    } else if (id == PaletteId::Everforest) {
+      currentPalette = {0xFF1B3B2Bu, 0xFF2A5B3Au, 0xFF3B7B49u, 0xFF4C9B58u,
+                        0xFF6BBA6Bu};
+    } else {
+      // Random gray: empty palette => function will produce grayscale colors
+      currentPalette.clear();
+    }
+  };
+
+  setPaletteById(PaletteId::RandomGray);
+  const int WIN_W = 1024, WIN_H = 512;
+  SDLRenderer renderer;
+  if (!renderer.init(WIN_W, WIN_H, "Mountains lib demo"))
     return 1;
-  }
-  SDL_Window *win =
-      SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                       WIN_W, WIN_H, SDL_WINDOW_SHOWN);
-  if (!win) {
-    std::cerr << "SDL_CreateWindow error: " << SDL_GetError() << "\n";
-    SDL_Quit();
-    return 1;
-  }
-  SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-  if (!ren) {
-    std::cerr << "SDL_CreateRenderer error: " << SDL_GetError() << "\n";
-    SDL_DestroyWindow(win);
-    SDL_Quit();
-    return 1;
-  }
-  SDL_Texture *tex = SDL_CreateTexture(
-      ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIN_W, WIN_H);
-  if (!tex) {
-    std::cerr << "SDL_CreateTexture error: " << SDL_GetError() << "\n";
-    SDL_DestroyRenderer(ren);
-    SDL_DestroyWindow(win);
-    SDL_Quit();
-    return 1;
-  }
-  // Example: create several mountains with different styles/colors and
-  // parameters
-  std::vector<Mountain> mountains;
-  // Back (further) mountain: wide, low-contrast, bluish
-  mountains.emplace_back(
-      WIN_W,     // width
-      1001u,     // seed
-      0.2, 0.15, // leftH, rightH
-      0.8, 0.5,  // initialDisp, roughness (roughness isn't exposed in recursion
-                 // multiplier here; tweak initialDisp)
-      0.2, 0.6,  // minHeight, maxHeight (so this mountain stays lower)
-      0.6,       // verticalSpan -> uses 60% of window height
-      30,        // verticalOffset (push up by 30 px)
-      Color{80, 100, 150, 255});
-  // Middle mountain
-  mountains.emplace_back(WIN_W, 2002u, 0.3, 0.3, 1.1, 0.5, 0.1, 0.9, 0.85, 0,
-                         Color{50, 50, 70, 255});
-  // Foreground mountain: darker, taller, narrower vertical span so it can be
-  // half visible
-  mountains.emplace_back(
-      WIN_W, 3003u, 0.0, 0.0, 1.2, 0.5, 0.4, 0.95,
-      0.5, // verticalSpan = 50% of window height (so mountain occupies only
-           // half the height -> half hidden)
-      0, Color{30, 30, 30, 255});
+
+  Scene scene = Scene::makeDefault(WIN_W, WIN_H, 3);
+  scene.setMountains(makeRandomMountains(3, WIN_W));
+  std::vector<uint32_t> buffer(WIN_W * WIN_H);
+  const int rowStride = WIN_W;
+
   bool running = true;
-  SDL_Event ev;
-  std::mt19937 seedGen(1234567u);
-  const uint32_t SKY_COLOR = Color{150, 200, 255, 255}.toPixelARGB();
-  const int targetFPS = 60;
-  const int frameDelay = 1000 / targetFPS;
+  std::vector<Event> events;
+
   while (running) {
-    uint32_t frameStart = SDL_GetTicks();
-    while (SDL_PollEvent(&ev)) {
-      if (ev.type == SDL_QUIT)
+    running = renderer.pollEvents(events);
+
+    // handle events at app level
+    bool regenRequested = false;
+    bool everforestRequested = false;
+    for (auto &e : events) {
+      if (e.type == Event::Type::Quit) {
         running = false;
-      else if (ev.type == SDL_KEYDOWN) {
-        SDL_Keycode k = ev.key.keysym.sym;
-        if (k == SDLK_ESCAPE || k == SDLK_q)
-          running = false;
-        else if (k == SDLK_SPACE) {
-          // regenerate all mountains with fresh random seeds
-          for (auto &m : mountains) {
-            uint32_t newSeed = seedGen();
-            m.regenerate(newSeed);
-            std::cout << "Regenerated mountain with seed " << newSeed << "\n";
-          }
+        break;
+      }
+      if (e.type == Event::Type::KeyDown) {
+        int kc = e.code;
+        if (kc == SDLK_n) {
+          setPaletteById(PaletteId::Nord);
+        } else if (kc == SDLK_e) {
+          setPaletteById(PaletteId::Everforest);
+        } else if (kc == SDLK_r) {
+          setPaletteById(PaletteId::RandomGray);
+        } else if (kc >= SDLK_0 && kc <= SDLK_9) {
+          int n = (kc == SDLK_0) ? 10 : (kc - SDLK_0);
+          scene.setMountains(
+              makeRandomMountainsWithPalette((size_t)n, WIN_W, currentPalette));
+        } else if (kc == SDLK_SPACE) {
+          size_t count = scene.getMountains().size();
+          scene.setMountains(
+              makeRandomMountainsWithPalette(count, WIN_W, currentPalette));
         }
       }
     }
-    // lock texture and fill pixels
-    void *pixels = nullptr;
-    int pitch = 0;
-    if (SDL_LockTexture(tex, nullptr, &pixels, &pitch) != 0) {
-      std::cerr << "SDL_LockTexture: " << SDL_GetError() << "\n";
-      break;
-    }
-    uint32_t *px = static_cast<uint32_t *>(pixels);
-    int rowStride = pitch / 4;
-    // Fill with sky
-    for (int y = 0; y < WIN_H; ++y) {
-      for (int x = 0; x < WIN_W; ++x) {
-        px[y * rowStride + x] = SKY_COLOR;
-      }
-    }
-    // Paint mountains back-to-front
-    for (const auto &m : mountains) {
-      m.paint(px, rowStride, WIN_W, WIN_H);
-    }
 
-    std::vector<Cloud> clouds;
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> ux(0.0f, WIN_W),
-        uy(0.0f, WIN_H * 0.4f);
-    std::uniform_real_distribution<float> urx(60.0f, 180.0f), ury(20.0f, 70.0f),
-        ua(0.12, 0.22);
-    for (int i = 0; i < 6; ++i) {
-      clouds.push_back({ux(rng), uy(rng), urx(rng), ury(rng), ua(rng)});
-    }
-    uint32_t cloudColor = argb(255, 255, 255, 255); // white clouds
-    draw_clouds(px, rowStride, WIN_W, WIN_H, clouds, cloudColor);
-
-    SDL_UnlockTexture(tex);
-    SDL_RenderClear(ren);
-    SDL_RenderCopy(ren, tex, nullptr, nullptr);
-    SDL_RenderPresent(ren);
-    // frame cap
-    uint32_t frameTime = SDL_GetTicks() - frameStart;
-    if (frameDelay > frameTime)
-      SDL_Delay(frameDelay - frameTime);
+    scene.update(100.0 / 60.0);
+    scene.render(buffer.data(), rowStride);
+    renderer.updateTexture(buffer.data(), rowStride * 4);
+    renderer.present();
+    SDL_Delay(1);
   }
-  SDL_DestroyTexture(tex);
-  SDL_DestroyRenderer(ren);
-  SDL_DestroyWindow(win);
-  SDL_Quit();
+
+  renderer.cleanup();
   return 0;
 }

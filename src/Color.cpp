@@ -1,6 +1,6 @@
 #include "Color.h"
 
-uint32_t Color::toPixelARGB() const {
+uint32_t Color::toPixelARGB() const noexcept {
   return (uint32_t(a) << 24) | (uint32_t(r) << 16) | (uint32_t(g) << 8) |
          uint32_t(b);
 }
