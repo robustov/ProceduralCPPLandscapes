@@ -1,11 +1,12 @@
 #include "Scene.h"
-#include <algorithm>
+#include "MountainParams.h"
 
-Scene::Scene(int width, int height, const ColorScheme &scheme)
+#include <algorithm>
+Scene::Scene(int width, int height, const MountainColorScheme &scheme)
     : width_(width), height_(height), scheme_(scheme) {}
 
 Scene Scene::makeDefault(int width, int height, int mountainCount) {
-  ColorScheme cs;
+  MountainColorScheme cs;
   Scene s(width, height, cs);
   for (int i = 0; i < mountainCount; ++i) {
     MountainParams p;

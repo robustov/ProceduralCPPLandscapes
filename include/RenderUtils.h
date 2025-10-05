@@ -10,12 +10,17 @@ static inline uint32_t argb(uint8_t a, uint8_t r, uint8_t g,
          uint32_t(b);
 }
 
-static inline void unpack_argb(uint32_t px, int &a, int &r, int &g,
-                               int &b) noexcept {
-  a = (px >> 24) & 0xFF;
-  r = (px >> 16) & 0xFF;
-  g = (px >> 8) & 0xFF;
-  b = px & 0xFF;
+static inline uint32_t packARGB(int a, int r, int g, int b) noexcept {
+  return (uint32_t(a & 0xFF) << 24) | (uint32_t(r & 0xFF) << 16) |
+         (uint32_t(g & 0xFF) << 8) | uint32_t(b & 0xFF);
+}
+
+static inline void unpackARGB(uint32_t c, int &a, int &r, int &g,
+                              int &b) noexcept {
+  a = (c >> 24) & 0xFF;
+  r = (c >> 16) & 0xFF;
+  g = (c >> 8) & 0xFF;
+  b = c & 0xFF;
 }
 
 static inline double clampd(double v, double lo, double hi) noexcept {
@@ -25,7 +30,7 @@ static inline double clampd(double v, double lo, double hi) noexcept {
 static inline uint32_t modulate_color(uint32_t colorARGB,
                                       double bright) noexcept {
   int a, r, g, b;
-  unpack_argb(colorARGB, a, r, g, b);
+  unpackARGB(colorARGB, a, r, g, b);
   r = int(clampd(r * bright, 0.0, 255.0));
   g = int(clampd(g * bright, 0.0, 255.0));
   b = int(clampd(b * bright, 0.0, 255.0));
@@ -50,4 +55,28 @@ static inline void fill_sky_gradient(uint32_t *pixels, int rowStride, int winW,
     for (int x = 0; x < winW; ++x)
       row[x] = rowColor;
   }
+}
+
+static inline int lerp_i(int a, int b, double t) noexcept {
+  return int((1.0 - t) * a + t * b + 0.5);
+}
+
+// linear color lerp (t in [0,1]); returns ARGB
+static inline uint32_t lerpColor(uint32_t c1, uint32_t c2, double t) noexcept {
+  int a1, r1, g1, b1, a2, r2, g2, b2;
+  unpackARGB(c1, a1, r1, g1, b1);
+  unpackARGB(c2, a2, r2, g2, b2);
+  int a = lerp_i(a1, a2, t), r = lerp_i(r1, r2, t), g = lerp_i(g1, g2, t),
+      b = lerp_i(b1, b2, t);
+  return packARGB(a, r, g, b);
+}
+
+// brighten/darken by factor (>1 brightens, <1 darkens)
+static inline uint32_t scaleColor(uint32_t c, double factor) noexcept {
+  int a, r, g, b;
+  unpackARGB(c, a, r, g, b);
+  r = int(std::min(255.0, std::max(0.0, r * factor)));
+  g = int(std::min(255.0, std::max(0.0, g * factor)));
+  b = int(std::min(255.0, std::max(0.0, b * factor)));
+  return packARGB(a, r, g, b);
 }
